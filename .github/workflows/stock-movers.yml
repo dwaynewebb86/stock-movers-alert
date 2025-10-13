@@ -1,0 +1,39 @@
+name: Stock Movers Alert
+
+on:
+  schedule:
+    # Runs at 10:05 AM EST (3:05 PM UTC) Monday-Friday
+    # Note: GitHub Actions uses UTC time
+    # EST = UTC-5, EDT = UTC-4 (adjust for daylight saving)
+    - cron: '5 15 * * 1-5'  # Winter (EST)
+    # - cron: '5 14 * * 1-5'  # Summer (EDT) - uncomment when needed
+  
+  # Allows manual trigger from GitHub UI
+  workflow_dispatch:
+
+jobs:
+  send-stock-alert:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run stock movers script
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+        run: python stock_movers.py
