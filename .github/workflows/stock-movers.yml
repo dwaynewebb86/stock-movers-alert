@@ -6,7 +6,7 @@ on:
     # Note: GitHub Actions uses UTC time
     # EST = UTC-5, EDT = UTC-4 (adjust for daylight saving)
     # - cron: '40 14 * * 1-5'  # Winter (EST)
-     - cron: '40 13 * * 1-5'  # Summer (EDT) - uncomment when needed
+     - cron: '35 13 * * 1-5'  # 9:35 AM EDT - uncomment when needed
   
   # Allows manual trigger from GitHub UI
   workflow_dispatch:
