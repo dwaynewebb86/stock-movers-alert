@@ -23,7 +23,7 @@ def get_stock_changes():
     today = datetime.now(est).date()
     
     market_open = datetime.combine(today, time(9, 30)).replace(tzinfo=est)
-    ten_am = datetime.combine(today, time(10, 0)).replace(tzinfo=est)
+    ten_am = datetime.combine(today, time(9, 40)).replace(tzinfo=est)
     
     stock_data = []
     
@@ -68,7 +68,7 @@ def get_stock_changes():
 def send_email(stock_data):
     """Send email with top 5 stock changes"""
     
-    subject = f"Top 5 Stock Movers - {datetime.now().strftime('%Y-%m-%d')}"
+    subject = f"Test Newsletter Top 5 Stock Moves - {datetime.now().strftime('%Y-%m-%d')}"
     
     html_body = f"""
     <html>
@@ -102,7 +102,7 @@ def send_email(stock_data):
         </style>
     </head>
     <body>
-        <h2>Top 5 Stock Movers (Market Open to 10:00 AM EST)</h2>
+        <h2>Top 5 Stock Movers (Market Open to 9:40 AM EST)</h2>
         <p>Date: {datetime.now().strftime('%B %d, %Y')}</p>
         <table>
             <tr>
