@@ -149,6 +149,49 @@ def send_email(stock_data):
     except Exception as e:
         print(f"Error sending email: {e}")
         raise
+        
+def send_no_data_email():
+    """Send email when no stock data is available"""
+    
+    subject = f"Stock Movers Alert - No Data Available - {datetime.now().strftime('%Y-%m-%d')}"
+    
+    html_body = """
+    <html>
+    <body style="font-family: Arial, sans-serif;">
+        <h2 style="color: #ff9800;">⚠️ No Stock Data Available</h2>
+        <p>The stock movers script ran but could not retrieve data.</p>
+        
+        <p><strong>Possible reasons:</strong></p>
+        <ul>
+            <li>Market is closed (weekend or holiday)</li>
+            <li>Script ran outside the 9:30-9:40 AM window</li>
+            <li>Data provider (Yahoo Finance) issue</li>
+            <li>GitHub Actions timing delay</li>
+        </ul>
+        
+        <p style="color: #666; font-size: 12px;">
+            If this happens on a weekday during market hours, check the GitHub Actions logs.
+        </p>
+    </body>
+    </html>
+    """
+    
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject
+    msg['From'] = SENDER_EMAIL
+    msg['To'] = RECIPIENT_EMAIL
+    
+    html_part = MIMEText(html_body, 'html')
+    msg.attach(html_part)
+    
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.send_message(msg)
+        print("No-data notification email sent successfully!")
+    except Exception as e:
+        print(f"Error sending email: {e}")
 
 def main():
     print("Fetching stock data...")
@@ -156,6 +199,7 @@ def main():
     
     if stock_data.empty:
         print("No stock data available. Market may be closed or data unavailable.")
+        send_no_data_email()
         return
     
     print("\nTop 5 Stock Movers:")
