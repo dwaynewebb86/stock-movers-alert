@@ -5,8 +5,8 @@ on:
     # Runs at 10:05 AM EST (3:05 PM UTC) Monday-Friday
     # Note: GitHub Actions uses UTC time
     # EST = UTC-5, EDT = UTC-4 (adjust for daylight saving)
-    # - cron: '0 15 * * 1-5' # Winter (EST) - uncomment in winter
-      - cron: '0 14 * * 1-5'  # Summer 9:41 AM (EDT) 
+    # - cron: '0 16 * * 1-5' # Winter (EST) - uncomment in winter
+      - cron: '0 15 * * 1-5'  # Summer 9:41 AM (EDT) 
   
   # Allows manual trigger from GitHub UI
   workflow_dispatch:
