@@ -1,3 +1,7 @@
 yfinance
 pandas
+requests
 pytz
+lxml
+html5lib
+beautifulsoup4
