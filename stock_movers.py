@@ -54,27 +54,37 @@ def get_most_active_tickers():
 
 
 def get_dynamic_stocks():
-    """Combine S&P 500 and most active stocks into one dynamic list"""
+    """Combine S&P 500 and most active stocks into a smaller, stable list"""
     sp500 = get_sp500_tickers()
     active = get_most_active_tickers()
 
     combined = list(set(sp500 + active))
     combined.sort()
 
+    # Limit size for reliability
+    limited = combined[:250]
+
     print(f"Loaded {len(sp500)} S&P 500 tickers")
     print(f"Loaded {len(active)} most active tickers")
-    print(f"Using {len(combined)} unique tickers total")
+    print(f"Using {len(limited)} tickers after limiting")
 
-    return combined
+    return limited
+
+
+def chunk_list(items, chunk_size=75):
+    """Split a list into smaller chunks"""
+    for i in range(0, len(items), chunk_size):
+        yield items[i:i + chunk_size]
 
 
 def get_stock_changes():
-    """Get stock price changes from market open to 9:40 AM EST using batched download"""
+    """Get stock price changes from market open to 9:40 AM EST using chunked batch downloads"""
     est = pytz.timezone('US/Eastern')
     today = datetime.now(est).date()
 
-    market_open = est.localize(datetime.combine(today, time(9, 30)))
-    nine_forty_am = est.localize(datetime.combine(today, time(9, 40)))
+    # Use the same time style as your original script
+    market_open = datetime.combine(today, time(9, 30)).replace(tzinfo=est)
+    nine_forty_am = datetime.combine(today, time(9, 40)).replace(tzinfo=est)
 
     stocks = get_dynamic_stocks()
 
@@ -82,65 +92,75 @@ def get_stock_changes():
         print("No stock tickers available.")
         return pd.DataFrame()
 
-    print(f"Downloading data for {len(stocks)} tickers...")
-
-    try:
-        data = yf.download(
-            tickers=stocks,
-            period="1d",
-            interval="1m",
-            group_by="ticker",
-            auto_adjust=False,
-            prepost=False,
-            threads=True,
-            progress=False
-        )
-    except Exception as e:
-        print(f"Error downloading stock data: {e}")
-        return pd.DataFrame()
-
     stock_data = []
 
-    for ticker in stocks:
+    print(f"Processing {len(stocks)} tickers in chunks...")
+
+    for stock_chunk in chunk_list(stocks, 75):
         try:
-            if ticker not in data:
+            print(f"Downloading chunk of {len(stock_chunk)} tickers...")
+
+            data = yf.download(
+                tickers=stock_chunk,
+                period="1d",
+                interval="1m",
+                group_by="ticker",
+                auto_adjust=False,
+                prepost=False,
+                threads=True,
+                progress=False
+            )
+
+            if data.empty:
+                print("Chunk returned no data.")
                 continue
 
-            ticker_data = data[ticker].dropna()
+            for ticker in stock_chunk:
+                try:
+                    if isinstance(data.columns, pd.MultiIndex):
+                        if ticker not in data.columns.get_level_values(0):
+                            continue
+                        ticker_data = data[ticker].dropna()
+                    else:
+                        ticker_data = data.dropna()
 
-            if ticker_data.empty:
-                continue
+                    if ticker_data.empty:
+                        continue
 
-            if ticker_data.index.tz is None:
-                ticker_data.index = ticker_data.index.tz_localize('UTC').tz_convert(est)
-            else:
-                ticker_data.index = ticker_data.index.tz_convert(est)
+                    if ticker_data.index.tz is None:
+                        ticker_data.index = ticker_data.index.tz_localize('UTC').tz_convert(est)
+                    else:
+                        ticker_data.index = ticker_data.index.tz_convert(est)
 
-            morning_data = ticker_data[
-                (ticker_data.index >= market_open) & (ticker_data.index <= nine_forty_am)
-            ]
+                    morning_data = ticker_data[
+                        (ticker_data.index >= market_open) & (ticker_data.index <= nine_forty_am)
+                    ]
 
-            if len(morning_data) < 2:
-                continue
+                    if len(morning_data) < 2:
+                        continue
 
-            open_price = morning_data['Open'].iloc[0]
-            current_price = morning_data['Close'].iloc[-1]
+                    open_price = morning_data['Open'].iloc[0]
+                    current_price = morning_data['Close'].iloc[-1]
 
-            if open_price == 0:
-                continue
+                    if pd.isna(open_price) or pd.isna(current_price) or open_price == 0:
+                        continue
 
-            pct_change = ((current_price - open_price) / open_price) * 100
+                    pct_change = ((current_price - open_price) / open_price) * 100
 
-            stock_data.append({
-                'Ticker': ticker,
-                'Open': open_price,
-                '9:40 AM Price': current_price,
-                'Change': current_price - open_price,
-                'Change %': pct_change
-            })
+                    stock_data.append({
+                        'Ticker': ticker,
+                        'Open': open_price,
+                        '9:40 AM Price': current_price,
+                        'Change': current_price - open_price,
+                        'Change %': pct_change
+                    })
+
+                except Exception as e:
+                    print(f"Error processing {ticker}: {e}")
+                    continue
 
         except Exception as e:
-            print(f"Error processing {ticker}: {e}")
+            print(f"Error downloading chunk: {e}")
             continue
 
     df = pd.DataFrame(stock_data)
