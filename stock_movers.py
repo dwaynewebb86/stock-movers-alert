@@ -36,7 +36,7 @@ def get_sp500_tickers():
 
 
 def get_most_active_tickers():
-    """Get Yahoo Finance most active tickers, but fail gracefully on rate limits"""
+    """Get Yahoo Finance most active tickers, retrying if rate-limited"""
     url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
     params = {
         "scrIds": "most_actives",
@@ -51,7 +51,7 @@ def get_most_active_tickers():
             response = requests.get(url, params=params, headers=headers, timeout=15)
 
             if response.status_code == 429:
-                print(f"Yahoo most-active request rate-limited on attempt {attempt} (429)")
+                print(f"Yahoo most-active request rate-limited on attempt {attempt}")
                 time.sleep(5 * attempt)
                 continue
 
@@ -74,9 +74,9 @@ def get_most_active_tickers():
 
 def get_dynamic_stocks():
     """
-    Use S&P 500 as the main stable universe.
-    Add most-active if available.
-    Limit total size for reliability.
+    Prefer S&P 500 plus most-active.
+    Fall back gracefully if one source is unavailable.
+    Limit total size for reliability in GitHub Actions.
     """
     sp500 = get_sp500_tickers()
     active = get_most_active_tickers()
@@ -84,24 +84,19 @@ def get_dynamic_stocks():
     if sp500 and active:
         combined = sorted(set(sp500 + active))
         limited = combined[:250]
-        print(f"Loaded {len(sp500)} S&P 500 tickers")
-        print(f"Loaded {len(active)} most active tickers")
-        print(f"Using {len(limited)} tickers after limiting")
-        print(f"First 10 tickers: {limited[:10]}")
+        print(f"Using {len(limited)} combined tickers")
         return limited
 
     if sp500:
         limited = sp500[:250]
-        print("Using S&P 500 only because most-active tickers were unavailable")
-        print(f"Using {len(limited)} S&P 500 tickers")
-        print(f"First 10 tickers: {limited[:10]}")
+        print("Using S&P 500 only")
+        print(f"Using {len(limited)} tickers")
         return limited
 
     if active:
         limited = active[:100]
-        print("Using most-active only because S&P 500 tickers were unavailable")
-        print(f"Using {len(limited)} most-active tickers")
-        print(f"First 10 tickers: {limited[:10]}")
+        print("Using most-active only")
+        print(f"Using {len(limited)} tickers")
         return limited
 
     print("No tickers available from any source")
@@ -115,7 +110,7 @@ def chunk_list(items, chunk_size=75):
 
 
 def get_stock_changes():
-    """Get stock price changes from market open to 9:40 AM Eastern using chunked batch downloads"""
+    """Get stock price changes from 9:30 to 9:40 AM Eastern using chunked batch downloads"""
     est = pytz.timezone("US/Eastern")
     stocks = get_dynamic_stocks()
 
@@ -124,15 +119,11 @@ def get_stock_changes():
         return pd.DataFrame()
 
     stock_data = []
-
     print(f"Processing {len(stocks)} tickers in chunks...")
 
     for chunk_num, stock_chunk in enumerate(chunk_list(stocks, 75), start=1):
         try:
-            print("\n" + "=" * 80)
-            print(f"Downloading chunk {chunk_num} with {len(stock_chunk)} tickers")
-            print(f"Chunk sample: {stock_chunk[:10]}")
-            print("=" * 80)
+            print(f"Downloading chunk {chunk_num} with {len(stock_chunk)} tickers...")
 
             data = yf.download(
                 tickers=stock_chunk,
@@ -149,16 +140,6 @@ def get_stock_changes():
                 print(f"Chunk {chunk_num} returned no data.")
                 continue
 
-            print(f"Chunk {chunk_num} data shape: {data.shape}")
-            print(f"Chunk {chunk_num} columns type: {type(data.columns)}")
-
-            if isinstance(data.columns, pd.MultiIndex):
-                available_tickers = sorted(set(data.columns.get_level_values(0)))
-                print(f"Chunk {chunk_num} available tickers count: {len(available_tickers)}")
-                print(f"Chunk {chunk_num} available ticker sample: {available_tickers[:10]}")
-            else:
-                print(f"Chunk {chunk_num} returned non-MultiIndex columns: {list(data.columns)}")
-
             chunk_success_count = 0
 
             for ticker in stock_chunk:
@@ -166,31 +147,20 @@ def get_stock_changes():
                     if isinstance(data.columns, pd.MultiIndex):
                         available_tickers = set(data.columns.get_level_values(0))
                         if ticker not in available_tickers:
-                            print(f"{ticker}: missing from downloaded MultiIndex data")
                             continue
                         ticker_data = data[ticker].dropna()
                     else:
                         ticker_data = data.dropna()
 
                     if ticker_data.empty:
-                        print(f"{ticker}: ticker_data empty after dropna")
                         continue
 
-                    # Convert Yahoo timestamps to Eastern
                     if ticker_data.index.tz is None:
                         ticker_data.index = ticker_data.index.tz_localize("UTC").tz_convert(est)
                     else:
                         ticker_data.index = ticker_data.index.tz_convert(est)
 
-                    # Filter by the original clock window
                     morning_data = ticker_data.between_time("09:30", "09:40")
-
-                    print(
-                        f"{ticker}: total_rows={len(ticker_data)}, "
-                        f"window_rows={len(morning_data)}, "
-                        f"first_index={ticker_data.index.min()}, "
-                        f"last_index={ticker_data.index.max()}"
-                    )
 
                     if len(morning_data) < 2:
                         continue
@@ -199,7 +169,6 @@ def get_stock_changes():
                     current_price = morning_data["Close"].iloc[-1]
 
                     if pd.isna(open_price) or pd.isna(current_price) or open_price == 0:
-                        print(f"{ticker}: invalid prices open={open_price}, close={current_price}")
                         continue
 
                     pct_change = ((current_price - open_price) / open_price) * 100
@@ -224,10 +193,7 @@ def get_stock_changes():
             print(f"Error downloading chunk {chunk_num}: {e}")
             continue
 
-    print("\n" + "=" * 80)
     print(f"Final collected tickers: {len(stock_data)}")
-    print("=" * 80)
-
     return pd.DataFrame(stock_data)
 
 
@@ -363,10 +329,6 @@ def send_no_data_email():
             <li>Ticker source or data provider issue</li>
             <li>GitHub Actions timing or rate limiting</li>
         </ul>
-
-        <p style="color: #666; font-size: 12px;">
-            Check the GitHub Actions logs for the debug output.
-        </p>
     </body>
     </html>
     """
@@ -390,13 +352,6 @@ def send_no_data_email():
 
 
 def main():
-    print("=" * 80)
-    print("Starting stock movers script")
-    print(f"UTC now: {datetime.utcnow()}")
-    est = pytz.timezone("US/Eastern")
-    print(f"Eastern now: {datetime.now(est)}")
-    print("=" * 80)
-
     print("Fetching stock data...")
     stock_data = get_stock_changes()
 
