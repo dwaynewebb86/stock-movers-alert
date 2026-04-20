@@ -1,87 +1,258 @@
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, time
+from datetime import datetime
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import pytz
 import os
+import requests
+import time
 
 # Get configuration from environment variables
-SMTP_SERVER = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
-SMTP_PORT = int(os.environ.get('SMTP_PORT', 587))
-SENDER_EMAIL = os.environ.get('SENDER_EMAIL')
-SENDER_PASSWORD = os.environ.get('SENDER_PASSWORD')
-RECIPIENT_EMAIL = os.environ.get('RECIPIENT_EMAIL')
+SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
+SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD")
+RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL")
 
-STOCKS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'WMT',
-          'JNJ', 'PG', 'MA', 'HD', 'DIS', 'BAC', 'ADBE', 'NFLX', 'CRM', 'CSCO']
+
+def get_sp500_tickers():
+    """Get current S&P 500 tickers from Wikipedia"""
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        tables = pd.read_html(url)
+        df = tables[0]
+        tickers = df["Symbol"].tolist()
+
+        # yfinance uses '-' instead of '.' for tickers like BRK.B
+        tickers = [ticker.replace(".", "-") for ticker in tickers]
+
+        print(f"Successfully loaded {len(tickers)} S&P 500 tickers")
+        return tickers
+    except Exception as e:
+        print(f"Error getting S&P 500 tickers: {e}")
+        return []
+
+
+def get_most_active_tickers():
+    """Get Yahoo Finance most active tickers, but fail gracefully on rate limits"""
+    url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+    params = {
+        "scrIds": "most_actives",
+        "count": 100
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    for attempt in range(1, 4):
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+
+            if response.status_code == 429:
+                print(f"Yahoo most-active request rate-limited on attempt {attempt} (429)")
+                time.sleep(5 * attempt)
+                continue
+
+            response.raise_for_status()
+            data = response.json()
+
+            quotes = data["finance"]["result"][0]["quotes"]
+            tickers = [quote["symbol"] for quote in quotes if "symbol" in quote]
+
+            print(f"Successfully loaded {len(tickers)} most active tickers")
+            return tickers
+
+        except Exception as e:
+            print(f"Error getting most active tickers on attempt {attempt}: {e}")
+            time.sleep(3 * attempt)
+
+    print("Falling back without Yahoo most-active tickers")
+    return []
+
+
+def get_dynamic_stocks():
+    """
+    Use S&P 500 as the main stable universe.
+    Add most-active if available.
+    Limit total size for reliability.
+    """
+    sp500 = get_sp500_tickers()
+    active = get_most_active_tickers()
+
+    if sp500 and active:
+        combined = sorted(set(sp500 + active))
+        limited = combined[:250]
+        print(f"Loaded {len(sp500)} S&P 500 tickers")
+        print(f"Loaded {len(active)} most active tickers")
+        print(f"Using {len(limited)} tickers after limiting")
+        print(f"First 10 tickers: {limited[:10]}")
+        return limited
+
+    if sp500:
+        limited = sp500[:250]
+        print("Using S&P 500 only because most-active tickers were unavailable")
+        print(f"Using {len(limited)} S&P 500 tickers")
+        print(f"First 10 tickers: {limited[:10]}")
+        return limited
+
+    if active:
+        limited = active[:100]
+        print("Using most-active only because S&P 500 tickers were unavailable")
+        print(f"Using {len(limited)} most-active tickers")
+        print(f"First 10 tickers: {limited[:10]}")
+        return limited
+
+    print("No tickers available from any source")
+    return []
+
+
+def chunk_list(items, chunk_size=75):
+    """Split a list into smaller chunks"""
+    for i in range(0, len(items), chunk_size):
+        yield items[i:i + chunk_size]
+
 
 def get_stock_changes():
-    """Get stock price changes from market open to 10:00 AM EST"""
-    est = pytz.timezone('US/Eastern')
-    today = datetime.now(est).date()
-    
-    market_open = datetime.combine(today, time(9, 30)).replace(tzinfo=est)
-    ten_am = datetime.combine(today, time(9, 40)).replace(tzinfo=est)
-    
+    """Get stock price changes from market open to 9:40 AM Eastern using chunked batch downloads"""
+    est = pytz.timezone("US/Eastern")
+    stocks = get_dynamic_stocks()
+
+    if not stocks:
+        print("No stock tickers available.")
+        return pd.DataFrame()
+
     stock_data = []
-    
-    for ticker in STOCKS:
+
+    print(f"Processing {len(stocks)} tickers in chunks...")
+
+    for chunk_num, stock_chunk in enumerate(chunk_list(stocks, 75), start=1):
         try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period='1d', interval='1m')
-            
-            if hist.empty:
+            print("\n" + "=" * 80)
+            print(f"Downloading chunk {chunk_num} with {len(stock_chunk)} tickers")
+            print(f"Chunk sample: {stock_chunk[:10]}")
+            print("=" * 80)
+
+            data = yf.download(
+                tickers=stock_chunk,
+                period="1d",
+                interval="1m",
+                group_by="ticker",
+                auto_adjust=False,
+                prepost=False,
+                threads=True,
+                progress=False
+            )
+
+            if data.empty:
+                print(f"Chunk {chunk_num} returned no data.")
                 continue
-            
-            hist.index = hist.index.tz_convert(est)
-            morning_data = hist[(hist.index >= market_open) & (hist.index <= ten_am)]
-            
-            if len(morning_data) < 2:
-                continue
-            
-            open_price = morning_data['Open'].iloc[0]
-            ten_am_price = morning_data['Close'].iloc[-1]
-            pct_change = ((ten_am_price - open_price) / open_price) * 100
-            
-            stock_data.append({
-                'Ticker': ticker,
-                'Open': open_price,
-                '10AM Price': ten_am_price,
-                'Change': ten_am_price - open_price,
-                'Change %': pct_change
-            })
-            
+
+            print(f"Chunk {chunk_num} data shape: {data.shape}")
+            print(f"Chunk {chunk_num} columns type: {type(data.columns)}")
+
+            if isinstance(data.columns, pd.MultiIndex):
+                available_tickers = sorted(set(data.columns.get_level_values(0)))
+                print(f"Chunk {chunk_num} available tickers count: {len(available_tickers)}")
+                print(f"Chunk {chunk_num} available ticker sample: {available_tickers[:10]}")
+            else:
+                print(f"Chunk {chunk_num} returned non-MultiIndex columns: {list(data.columns)}")
+
+            chunk_success_count = 0
+
+            for ticker in stock_chunk:
+                try:
+                    if isinstance(data.columns, pd.MultiIndex):
+                        available_tickers = set(data.columns.get_level_values(0))
+                        if ticker not in available_tickers:
+                            print(f"{ticker}: missing from downloaded MultiIndex data")
+                            continue
+                        ticker_data = data[ticker].dropna()
+                    else:
+                        ticker_data = data.dropna()
+
+                    if ticker_data.empty:
+                        print(f"{ticker}: ticker_data empty after dropna")
+                        continue
+
+                    # Convert Yahoo timestamps to Eastern
+                    if ticker_data.index.tz is None:
+                        ticker_data.index = ticker_data.index.tz_localize("UTC").tz_convert(est)
+                    else:
+                        ticker_data.index = ticker_data.index.tz_convert(est)
+
+                    # Filter by the original clock window
+                    morning_data = ticker_data.between_time("09:30", "09:40")
+
+                    print(
+                        f"{ticker}: total_rows={len(ticker_data)}, "
+                        f"window_rows={len(morning_data)}, "
+                        f"first_index={ticker_data.index.min()}, "
+                        f"last_index={ticker_data.index.max()}"
+                    )
+
+                    if len(morning_data) < 2:
+                        continue
+
+                    open_price = morning_data["Open"].iloc[0]
+                    current_price = morning_data["Close"].iloc[-1]
+
+                    if pd.isna(open_price) or pd.isna(current_price) or open_price == 0:
+                        print(f"{ticker}: invalid prices open={open_price}, close={current_price}")
+                        continue
+
+                    pct_change = ((current_price - open_price) / open_price) * 100
+
+                    stock_data.append({
+                        "Ticker": ticker,
+                        "Open": open_price,
+                        "9:40 AM Price": current_price,
+                        "Change": current_price - open_price,
+                        "Change %": pct_change
+                    })
+
+                    chunk_success_count += 1
+
+                except Exception as e:
+                    print(f"Error processing {ticker}: {e}")
+                    continue
+
+            print(f"Chunk {chunk_num} successful tickers collected: {chunk_success_count}")
+
         except Exception as e:
-            print(f"Error processing {ticker}: {e}")
+            print(f"Error downloading chunk {chunk_num}: {e}")
             continue
-    
-    df = pd.DataFrame(stock_data)
-    if not df.empty:
-        df['Abs_Change'] = df['Change %'].abs()
-        df = df.sort_values('Abs_Change', ascending=False).head(5)
-        df = df.drop('Abs_Change', axis=1)
-    
-    return df
+
+    print("\n" + "=" * 80)
+    print(f"Final collected tickers: {len(stock_data)}")
+    print("=" * 80)
+
+    return pd.DataFrame(stock_data)
+
 
 def send_email(stock_data):
-    """Send email with top 5 stock changes"""
-    
-    subject = f"Test Newsletter Top 5 Stock Moves - {datetime.now().strftime('%Y-%m-%d')}"
-    
+    """Send email with top 25 gainers and bottom 25 losers"""
+    top_25 = stock_data.sort_values("Change %", ascending=False).head(25)
+    bottom_25 = stock_data.sort_values("Change %", ascending=True).head(25)
+
+    subject = f"Stock Movers Report - {datetime.now().strftime('%Y-%m-%d')}"
+
     html_body = f"""
     <html>
     <head>
         <style>
+            body {{
+                font-family: Arial, sans-serif;
+            }}
             table {{
                 border-collapse: collapse;
                 width: 100%;
-                font-family: Arial, sans-serif;
+                margin-bottom: 30px;
             }}
             th, td {{
                 border: 1px solid #ddd;
-                padding: 12px;
+                padding: 10px;
                 text-align: left;
             }}
             th {{
@@ -102,44 +273,68 @@ def send_email(stock_data):
         </style>
     </head>
     <body>
-        <h2>Top 5 Stock Movers (Market Open to 9:40 AM EST)</h2>
+        <h2>Top 25 Gainers (Market Open to 9:40 AM EST)</h2>
         <p>Date: {datetime.now().strftime('%B %d, %Y')}</p>
         <table>
             <tr>
                 <th>Ticker</th>
                 <th>Open Price</th>
-                <th>10 AM Price</th>
+                <th>9:40 AM Price</th>
                 <th>Change ($)</th>
                 <th>Change (%)</th>
             </tr>
     """
-    
-    for _, row in stock_data.iterrows():
-        change_class = 'positive' if row['Change %'] > 0 else 'negative'
+
+    for _, row in top_25.iterrows():
         html_body += f"""
             <tr>
                 <td><strong>{row['Ticker']}</strong></td>
                 <td>${row['Open']:.2f}</td>
-                <td>${row['10AM Price']:.2f}</td>
-                <td class="{change_class}">${row['Change']:.2f}</td>
-                <td class="{change_class}">{row['Change %']:.2f}%</td>
+                <td>${row['9:40 AM Price']:.2f}</td>
+                <td class="positive">${row['Change']:.2f}</td>
+                <td class="positive">{row['Change %']:.2f}%</td>
             </tr>
         """
-    
+
+    html_body += """
+        </table>
+
+        <h2>Bottom 25 Losers (Market Open to 9:40 AM EST)</h2>
+        <table>
+            <tr>
+                <th>Ticker</th>
+                <th>Open Price</th>
+                <th>9:40 AM Price</th>
+                <th>Change ($)</th>
+                <th>Change (%)</th>
+            </tr>
+    """
+
+    for _, row in bottom_25.iterrows():
+        html_body += f"""
+            <tr>
+                <td><strong>{row['Ticker']}</strong></td>
+                <td>${row['Open']:.2f}</td>
+                <td>${row['9:40 AM Price']:.2f}</td>
+                <td class="negative">${row['Change']:.2f}</td>
+                <td class="negative">{row['Change %']:.2f}%</td>
+            </tr>
+        """
+
     html_body += """
         </table>
     </body>
     </html>
     """
-    
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = RECIPIENT_EMAIL
-    
-    html_part = MIMEText(html_body, 'html')
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECIPIENT_EMAIL
+
+    html_part = MIMEText(html_body, "html")
     msg.attach(html_part)
-    
+
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
@@ -149,41 +344,41 @@ def send_email(stock_data):
     except Exception as e:
         print(f"Error sending email: {e}")
         raise
-        
+
+
 def send_no_data_email():
     """Send email when no stock data is available"""
-    
     subject = f"Stock Movers Alert - No Data Available - {datetime.now().strftime('%Y-%m-%d')}"
-    
+
     html_body = """
     <html>
     <body style="font-family: Arial, sans-serif;">
         <h2 style="color: #ff9800;">⚠️ No Stock Data Available</h2>
         <p>The stock movers script ran but could not retrieve data.</p>
-        
+
         <p><strong>Possible reasons:</strong></p>
         <ul>
             <li>Market is closed (weekend or holiday)</li>
             <li>Script ran outside the 9:30-9:40 AM window</li>
-            <li>Data provider (Yahoo Finance) issue</li>
-            <li>GitHub Actions timing delay</li>
+            <li>Ticker source or data provider issue</li>
+            <li>GitHub Actions timing or rate limiting</li>
         </ul>
-        
+
         <p style="color: #666; font-size: 12px;">
-            If this happens on a weekday during market hours, check the GitHub Actions logs.
+            Check the GitHub Actions logs for the debug output.
         </p>
     </body>
     </html>
     """
-    
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = RECIPIENT_EMAIL
-    
-    html_part = MIMEText(html_body, 'html')
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECIPIENT_EMAIL
+
+    html_part = MIMEText(html_body, "html")
     msg.attach(html_part)
-    
+
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
@@ -191,22 +386,37 @@ def send_no_data_email():
             server.send_message(msg)
         print("No-data notification email sent successfully!")
     except Exception as e:
-        print(f"Error sending email: {e}")
+        print(f"Error sending no-data email: {e}")
+
 
 def main():
+    print("=" * 80)
+    print("Starting stock movers script")
+    print(f"UTC now: {datetime.utcnow()}")
+    est = pytz.timezone("US/Eastern")
+    print(f"Eastern now: {datetime.now(est)}")
+    print("=" * 80)
+
     print("Fetching stock data...")
     stock_data = get_stock_changes()
-    
+
     if stock_data.empty:
         print("No stock data available. Market may be closed or data unavailable.")
         send_no_data_email()
         return
-    
-    print("\nTop 5 Stock Movers:")
-    print(stock_data.to_string(index=False))
-    
+
+    top_25 = stock_data.sort_values("Change %", ascending=False).head(25)
+    bottom_25 = stock_data.sort_values("Change %", ascending=True).head(25)
+
+    print("\nTop 25 Gainers:")
+    print(top_25.to_string(index=False))
+
+    print("\nBottom 25 Losers:")
+    print(bottom_25.to_string(index=False))
+
     print("\nSending email...")
     send_email(stock_data)
+
 
 if __name__ == "__main__":
     main()
