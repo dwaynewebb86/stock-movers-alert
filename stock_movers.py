@@ -1,6 +1,6 @@
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, time
+from datetime import datetime
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -78,14 +78,8 @@ def chunk_list(items, chunk_size=75):
 
 
 def get_stock_changes():
-    """Get stock price changes from market open to 9:40 AM EST using chunked batch downloads"""
-    est = pytz.timezone('US/Eastern')
-    today = datetime.now(est).date()
-
-    # Use the same time style as your original script
-    market_open = datetime.combine(today, time(9, 30)).replace(tzinfo=est)
-    nine_forty_am = datetime.combine(today, time(9, 40)).replace(tzinfo=est)
-
+    """Get stock price changes from market open to 9:40 AM Eastern using chunked batch downloads"""
+    est = pytz.timezone("US/Eastern")
     stocks = get_dynamic_stocks()
 
     if not stocks:
@@ -127,20 +121,20 @@ def get_stock_changes():
                     if ticker_data.empty:
                         continue
 
+                    # Convert Yahoo timestamps to Eastern
                     if ticker_data.index.tz is None:
-                        ticker_data.index = ticker_data.index.tz_localize('UTC').tz_convert(est)
+                        ticker_data.index = ticker_data.index.tz_localize("UTC").tz_convert(est)
                     else:
                         ticker_data.index = ticker_data.index.tz_convert(est)
 
-                    morning_data = ticker_data[
-                        (ticker_data.index >= market_open) & (ticker_data.index <= nine_forty_am)
-                    ]
+                    # Filter by local clock time
+                    morning_data = ticker_data.between_time("09:30", "09:40")
 
                     if len(morning_data) < 2:
                         continue
 
-                    open_price = morning_data['Open'].iloc[0]
-                    current_price = morning_data['Close'].iloc[-1]
+                    open_price = morning_data["Open"].iloc[0]
+                    current_price = morning_data["Close"].iloc[-1]
 
                     if pd.isna(open_price) or pd.isna(current_price) or open_price == 0:
                         continue
@@ -148,11 +142,11 @@ def get_stock_changes():
                     pct_change = ((current_price - open_price) / open_price) * 100
 
                     stock_data.append({
-                        'Ticker': ticker,
-                        'Open': open_price,
-                        '9:40 AM Price': current_price,
-                        'Change': current_price - open_price,
-                        'Change %': pct_change
+                        "Ticker": ticker,
+                        "Open": open_price,
+                        "9:40 AM Price": current_price,
+                        "Change": current_price - open_price,
+                        "Change %": pct_change
                     })
 
                 except Exception as e:
@@ -163,14 +157,13 @@ def get_stock_changes():
             print(f"Error downloading chunk: {e}")
             continue
 
-    df = pd.DataFrame(stock_data)
-    return df
+    return pd.DataFrame(stock_data)
 
 
 def send_email(stock_data):
     """Send email with top 25 gainers and bottom 25 losers"""
-    top_25 = stock_data.sort_values('Change %', ascending=False).head(25)
-    bottom_25 = stock_data.sort_values('Change %', ascending=True).head(25)
+    top_25 = stock_data.sort_values("Change %", ascending=False).head(25)
+    bottom_25 = stock_data.sort_values("Change %", ascending=True).head(25)
 
     subject = f"Stock Movers Report - {datetime.now().strftime('%Y-%m-%d')}"
 
@@ -301,7 +294,7 @@ def send_no_data_email():
         </ul>
 
         <p style="color: #666; font-size: 12px;">
-            If this happens on a weekday during market hours, check the GitHub Actions logs.
+            If this happens on a weekday during market hours, check the logs.
         </p>
     </body>
     </html>
@@ -334,8 +327,8 @@ def main():
         send_no_data_email()
         return
 
-    top_25 = stock_data.sort_values('Change %', ascending=False).head(25)
-    bottom_25 = stock_data.sort_values('Change %', ascending=True).head(25)
+    top_25 = stock_data.sort_values("Change %", ascending=False).head(25)
+    bottom_25 = stock_data.sort_values("Change %", ascending=True).head(25)
 
     print("\nTop 25 Gainers:")
     print(top_25.to_string(index=False))
