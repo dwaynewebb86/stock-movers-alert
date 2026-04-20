@@ -22,10 +22,11 @@ def get_sp500_tickers():
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         tables = pd.read_html(url)
         df = tables[0]
-        tickers = df['Symbol'].tolist()
+        tickers = df["Symbol"].tolist()
 
         # yfinance uses '-' instead of '.' for tickers like BRK.B
-        tickers = [ticker.replace('.', '-') for ticker in tickers]
+        tickers = [ticker.replace(".", "-") for ticker in tickers]
+        print(f"Successfully loaded {len(tickers)} S&P 500 tickers")
         return tickers
     except Exception as e:
         print(f"Error getting S&P 500 tickers: {e}")
@@ -45,8 +46,9 @@ def get_most_active_tickers():
         response.raise_for_status()
         data = response.json()
 
-        quotes = data['finance']['result'][0]['quotes']
-        tickers = [quote['symbol'] for quote in quotes if 'symbol' in quote]
+        quotes = data["finance"]["result"][0]["quotes"]
+        tickers = [quote["symbol"] for quote in quotes if "symbol" in quote]
+        print(f"Successfully loaded {len(tickers)} most active tickers")
         return tickers
     except Exception as e:
         print(f"Error getting most active tickers: {e}")
@@ -66,7 +68,9 @@ def get_dynamic_stocks():
 
     print(f"Loaded {len(sp500)} S&P 500 tickers")
     print(f"Loaded {len(active)} most active tickers")
+    print(f"Combined unique tickers: {len(combined)}")
     print(f"Using {len(limited)} tickers after limiting")
+    print(f"First 10 tickers: {limited[:10]}")
 
     return limited
 
@@ -90,9 +94,12 @@ def get_stock_changes():
 
     print(f"Processing {len(stocks)} tickers in chunks...")
 
-    for stock_chunk in chunk_list(stocks, 75):
+    for chunk_num, stock_chunk in enumerate(chunk_list(stocks, 75), start=1):
         try:
-            print(f"Downloading chunk of {len(stock_chunk)} tickers...")
+            print("\n" + "=" * 80)
+            print(f"Downloading chunk {chunk_num} with {len(stock_chunk)} tickers")
+            print(f"Chunk sample: {stock_chunk[:10]}")
+            print("=" * 80)
 
             data = yf.download(
                 tickers=stock_chunk,
@@ -106,19 +113,35 @@ def get_stock_changes():
             )
 
             if data.empty:
-                print("Chunk returned no data.")
+                print(f"Chunk {chunk_num} returned no data.")
                 continue
+
+            print(f"Chunk {chunk_num} data shape: {data.shape}")
+            print(f"Chunk {chunk_num} columns type: {type(data.columns)}")
+
+            if isinstance(data.columns, pd.MultiIndex):
+                available_tickers = sorted(set(data.columns.get_level_values(0)))
+                print(f"Chunk {chunk_num} available tickers count: {len(available_tickers)}")
+                print(f"Chunk {chunk_num} available ticker sample: {available_tickers[:10]}")
+            else:
+                print(f"Chunk {chunk_num} returned non-MultiIndex columns: {list(data.columns)}")
+
+            chunk_success_count = 0
 
             for ticker in stock_chunk:
                 try:
                     if isinstance(data.columns, pd.MultiIndex):
-                        if ticker not in data.columns.get_level_values(0):
+                        available_tickers = set(data.columns.get_level_values(0))
+                        if ticker not in available_tickers:
+                            print(f"{ticker}: missing from downloaded MultiIndex data")
                             continue
                         ticker_data = data[ticker].dropna()
                     else:
+                        # Single ticker fallback
                         ticker_data = data.dropna()
 
                     if ticker_data.empty:
+                        print(f"{ticker}: ticker_data empty after dropna")
                         continue
 
                     # Convert Yahoo timestamps to Eastern
@@ -127,8 +150,14 @@ def get_stock_changes():
                     else:
                         ticker_data.index = ticker_data.index.tz_convert(est)
 
-                    # Filter by local clock time
                     morning_data = ticker_data.between_time("09:30", "09:40")
+
+                    print(
+                        f"{ticker}: total_rows={len(ticker_data)}, "
+                        f"window_rows={len(morning_data)}, "
+                        f"first_index={ticker_data.index.min()}, "
+                        f"last_index={ticker_data.index.max()}"
+                    )
 
                     if len(morning_data) < 2:
                         continue
@@ -137,6 +166,7 @@ def get_stock_changes():
                     current_price = morning_data["Close"].iloc[-1]
 
                     if pd.isna(open_price) or pd.isna(current_price) or open_price == 0:
+                        print(f"{ticker}: invalid prices open={open_price}, close={current_price}")
                         continue
 
                     pct_change = ((current_price - open_price) / open_price) * 100
@@ -149,13 +179,21 @@ def get_stock_changes():
                         "Change %": pct_change
                     })
 
+                    chunk_success_count += 1
+
                 except Exception as e:
                     print(f"Error processing {ticker}: {e}")
                     continue
 
+            print(f"Chunk {chunk_num} successful tickers collected: {chunk_success_count}")
+
         except Exception as e:
-            print(f"Error downloading chunk: {e}")
+            print(f"Error downloading chunk {chunk_num}: {e}")
             continue
+
+    print("\n" + "=" * 80)
+    print(f"Final collected tickers: {len(stock_data)}")
+    print("=" * 80)
 
     return pd.DataFrame(stock_data)
 
@@ -256,12 +294,12 @@ def send_email(stock_data):
     </html>
     """
 
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = RECIPIENT_EMAIL
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECIPIENT_EMAIL
 
-    html_part = MIMEText(html_body, 'html')
+    html_part = MIMEText(html_body, "html")
     msg.attach(html_part)
 
     try:
@@ -294,18 +332,18 @@ def send_no_data_email():
         </ul>
 
         <p style="color: #666; font-size: 12px;">
-            If this happens on a weekday during market hours, check the logs.
+            Check the GitHub Actions logs for the debug output.
         </p>
     </body>
     </html>
     """
 
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = RECIPIENT_EMAIL
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECIPIENT_EMAIL
 
-    html_part = MIMEText(html_body, 'html')
+    html_part = MIMEText(html_body, "html")
     msg.attach(html_part)
 
     try:
@@ -319,6 +357,13 @@ def send_no_data_email():
 
 
 def main():
+    print("=" * 80)
+    print("Starting stock movers script")
+    print(f"UTC now: {datetime.utcnow()}")
+    est = pytz.timezone("US/Eastern")
+    print(f"Eastern now: {datetime.now(est)}")
+    print("=" * 80)
+
     print("Fetching stock data...")
     stock_data = get_stock_changes()
 
